@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "local-ci"
+version = "0.1.0"
+description = "GitHub Actions に依存しないローカル CI ランナー"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6,<7"]
+
+[project.scripts]
+local-ci = "local_ci.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/local_ci"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

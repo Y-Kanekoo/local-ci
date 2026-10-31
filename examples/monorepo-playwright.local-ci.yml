@@ -1,0 +1,20 @@
+before:
+  - name: postgres-start
+    run: docker compose -p local-ci-{repo} up -d postgres --wait
+    timeout: 120
+after:
+  - name: postgres-stop
+    run: docker compose -p local-ci-{repo} down
+jobs:
+  frontend:lint:
+    kind: lint
+    workdir: frontend
+    run: npm run lint
+  backend:test:
+    kind: test
+    workdir: backend
+    run: uv run pytest
+  e2e:browser:
+    kind: e2e
+    workdir: e2e
+    run: npx playwright test
