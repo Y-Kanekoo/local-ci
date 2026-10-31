@@ -1,0 +1,19 @@
+# testcase-manager 用の外部設定例。
+# $LOCAL_CI_HOME/repos/testcase-manager.yml（既定 ~/.local-ci/repos/）に置くと、
+# リポジトリへコミットせずに e2e を PostgreSQL 付きで実行できます。
+# 前提: Docker Desktop が起動済み、ホストの 5432 / 8080 / 5173 番ポートが空いていること
+# （playwright.config.ts は reuseExistingServer: true のため、5173 に別アプリがあるとそれを再利用します）。
+include_auto: true
+before:
+  - name: postgres-start
+    run: docker compose -p local-ci-{repo} up -d postgres --wait
+    timeout: 180
+after:
+  - name: postgres-stop
+    run: docker compose -p local-ci-{repo} down
+jobs:
+  e2e:e2e:
+    kind: e2e
+    workdir: e2e
+    run: npm run e2e
+    timeout: 900

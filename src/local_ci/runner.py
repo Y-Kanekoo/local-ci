@@ -89,8 +89,10 @@ def _child_env(job: Job) -> dict[str, str]:
     for name in list(env):
         if name.startswith(("npm_config_", "npm_lifecycle_", "npm_package_")):
             env.pop(name)
-    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
-        if name not in job.pass_env:
+    for name in list(env):
+        if (name in {"GH_TOKEN", "GITHUB_TOKEN"} or "WEBHOOK" in name.upper()) and (
+            name not in job.pass_env
+        ):
             env.pop(name, None)
     env["CI"] = "1"
     if job.kind == "e2e":
@@ -214,7 +216,7 @@ def _run_job(
             reason = forced_skip or (
                 "設定によりスキップしました"
                 if job.skip
-                else "外部サービスが必要なためスキップしました"
+                else job.skip_reason or "外部サービスが必要なためスキップしました"
             )
             result["skip_reason"] = reason
             log.write(redactor.redact(reason + "\n"))
@@ -315,7 +317,7 @@ def _planned_job(job: Job, worktree: Path) -> dict[str, object]:
     if job.skip:
         reason = "設定によりスキップします"
     elif job.needs_services:
-        reason = "外部サービスが必要なためスキップします"
+        reason = job.skip_reason or "外部サービスが必要なためスキップします"
     else:
         cwd = (worktree / job.workdir).resolve()
         if cwd.is_relative_to(worktree.resolve()) and cwd.is_dir():

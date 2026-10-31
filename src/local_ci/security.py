@@ -4,13 +4,14 @@ import os
 import re
 
 SECRET_NAME = re.compile(
-    r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|PRIVATE|COOKIE|SESSION", re.I
+    r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|PRIVATE|COOKIE|SESSION|WEBHOOK", re.I
 )
 PATTERNS = (
     re.compile(r"(?:ghp_|gho_|ghs_|ghu_|github_pat_)[A-Za-z0-9_]+"),
     re.compile(r"(?:sk-ant-|sk-)[A-Za-z0-9_-]{8,}"),
     re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]+"),
+    re.compile(r"https://(?:[a-z]+\.)?discord(?:app)?\.com/api/webhooks/[^\s\"'`]+", re.I),
     re.compile(r"(Authorization:\s*Bearer\s+)\S+", re.I),
     re.compile(r"(https?://)[^\s/@:]+:[^\s/@]+@", re.I),
     re.compile(r"-----BEGIN [^-\n]*PRIVATE KEY-----[\s\S]*?-----END [^-\n]*PRIVATE KEY-----"),

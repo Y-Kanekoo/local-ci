@@ -22,6 +22,12 @@ MARKERS = {
     "mvnw",
     "go.mod",
 }
+COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+SERVICE_SKIP_REASON = (
+    "{compose} があり DB 等の外部サービスが必要な可能性があるため、自動検出した e2e を"
+    "スキップしました。before フックでサービスを起動する設定を .local-ci.yml または "
+    "$LOCAL_CI_HOME/repos/<repo名>.yml に書くと実行できます"
+)
 ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}\Z")
 UNSAFE = {"rm", "rmdir", "sudo", "doas", "launchctl", "mkfs", "dd"}
 
@@ -38,6 +44,7 @@ class Job:
     allow_failure: bool = False
     skip: bool = False
     pass_env: list[str] = field(default_factory=list)
+    skip_reason: str | None = None
 
 
 @dataclass
@@ -287,6 +294,21 @@ def detect(root: Path) -> list[Job]:
             if child.is_dir() and any((child / marker).exists() for marker in MARKERS)
             for job in _detect_dir(child, child.name + ":", child.name)
         ]
+    root_compose = next((name for name in COMPOSE_FILES if (root / name).exists()), None)
+    for job in raw:
+        if job.kind != "e2e":
+            continue
+        compose = root_compose or next(
+            (
+                f"{job.workdir}/{name}"
+                for name in COMPOSE_FILES
+                if (root / job.workdir / name).exists()
+            ),
+            None,
+        )
+        if compose:
+            job.needs_services = True
+            job.skip_reason = SERVICE_SKIP_REASON.format(compose=compose)
     names: dict[str, int] = {}
     for job in raw:
         count = names.get(job.name, 0)

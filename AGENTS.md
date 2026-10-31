@@ -9,3 +9,5 @@
 - ジョブは既定で setup → lint → typecheck → test → build → e2e に安定ソートする。`order: config` のときのみ設定順を維持する。
 - `before` の失敗は以降のジョブをスキップして全体を failure にし、`after` は成功・失敗・中断時に実行する。フックのログと結果もマスクして保存する。
 - 子プロセスから親の仮想環境・Conda・uv 変数と npm メタデータ変数を除去し、親の `VIRTUAL_ENV/bin` を PATH から除く。Playwright e2e には `CI=1` と `PLAYWRIGHT_FORCE_TTY=0` を渡す。
+- 集計は `notify.py` が担当し、ファイル出力と Discord Webhook 送信（標準ライブラリの urllib のみ）を行う。Webhook URL は環境変数からのみ読み、保存・ログ出力しない。テストでは送信関数を差し替え、ネットワークを使わない。
+- `compose.yaml` 等があるリポジトリの自動検出 e2e は `needs_services` として理由付きでスキップする。

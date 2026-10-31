@@ -90,6 +90,8 @@ Playwright の e2e ジョブには `CI=1` と `PLAYWRIGHT_FORCE_TTY=0` を付与
 | `pom.xml` / `mvnw` | Maven test |
 | `go.mod` | `go vet ./...`、`go test ./...` |
 
+リポジトリ直下（または e2e のディレクトリ）に `compose.yaml` / `docker-compose.yml` などがある場合、自動検出した e2e は DB 等の外部サービスが必要とみなして理由付きで `skipped` にします。`before` フックでサービスを起動する設定を書けば実行できます（例: [examples/testcase-manager.local-ci.yml](examples/testcase-manager.local-ci.yml)）。明示設定した e2e はこの判定の対象外です。
+
 ルートに上記ファイルがなければ直下 1 階層のディレクトリを検出し、`frontend:lint` のように命名します。PATH にないツールのジョブは理由をログに書いて `skipped` とします。ログ名では `:` や `/` を `__` に置換し、結果中のジョブ名は維持します。Node 依存は各 worktree 内へ新規導入し、パッケージマネージャーのキャッシュを利用します。
 
 Playwright の Chromium は自動導入しません。未導入なら、対象プロジェクトで `npx playwright install chromium` を実行するか、設定の `setup` に明記してください。
@@ -97,6 +99,18 @@ Playwright の Chromium は自動導入しません。未導入なら、対象�
 ## 結果と GitHub 報告
 
 ログ、`result.json`、`summary.md` は `~/.local-ci/runs/<repo>/<日時>-<sha7>/` に保存します。`local-ci logs <repo>` は最新の summary を表示します。`--report status` は `local-ci/<ジョブ名>` と `local-ci/overall` の commit status を `gh api` で送信します。`--report comment` は PR にサマリと失敗ログ末尾 40 行をコメントし、同じマーカーのコメントがあれば編集します。既定は `--report none` です。`--dry-run-report` は送信内容を表示します。gh の失敗はジョブ結果を変えません。
+
+## 集計の出力（ファイル / Discord）
+
+`run-all` と `watch` は実行ごとに全リポジトリの結果を集計し、`$LOCAL_CI_HOME/summary/latest.md` と `latest.json` に保存して、Markdown 表を標準出力に表示します。`--output <path>` で任意の場所にも書き出します（拡張子 `.json` なら JSON、それ以外は Markdown）。`run` でも `--output` / `--discord` を使えます。
+
+```sh
+local-ci run-all --root ~/Projects --output ~/ci-summary.md
+export LOCAL_CI_DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/...'
+local-ci run-all --root ~/Projects --discord
+```
+
+`--discord` は環境変数 `LOCAL_CI_DISCORD_WEBHOOK_URL`（グローバル設定の `discord_webhook_env` で変数名を変更可）の Discord Webhook へ、リポジトリごとの結果と失敗ジョブ名を 2000 文字以内で送信します。URL は `https://discord.com/api/webhooks/` 形式のみ受け付け、メンションは無効化します。URL はファイルにもログにも保存せず、`WEBHOOK` を含む環境変数はジョブへ渡しません（必要なら `pass_env`）。未設定や送信失敗は警告のみで、終了コードは CI 結果で決まります。有料 API は使いません。グローバル設定では `output: ~/ci-summary.md`、`discord: true` も指定できます。
 
 ## 複数リポジトリと監視
 

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from local_ci import notify
 from local_ci.runner import git, home, plan, run
 from local_ci.security import Redactor
 
@@ -50,6 +51,40 @@ def scan_repos(
     return found
 
 
+def _publish(
+    results: list[dict[str, object]],
+    args: argparse.Namespace,
+    config: dict[str, object],
+    latest: bool = False,
+) -> dict[str, object]:
+    """集計結果をファイルと Discord に出力する。送信失敗は警告のみ。"""
+    summary = notify.aggregate(results)
+    redactor = Redactor()
+    paths = []
+    if latest:
+        paths += [home() / "summary" / "latest.md", home() / "summary" / "latest.json"]
+    output = getattr(args, "output", None) or config.get("output")
+    if output:
+        paths.append(Path(str(output)))
+    for path in paths:
+        written = notify.write_output(path, summary, redactor)
+        if not getattr(args, "quiet", False):
+            print(f"集計を書き出しました: {written}", file=sys.stderr)
+    if getattr(args, "discord", False) or config.get("discord") is True:
+        env_name = str(config.get("discord_webhook_env") or notify.DEFAULT_WEBHOOK_ENV)
+        try:
+            notify.send_discord(summary, env_name, redactor)
+            if not getattr(args, "quiet", False):
+                print("Discord に送信しました", file=sys.stderr)
+        except (OSError, ValueError) as error:
+            print(redactor.redact(f"警告: {error}"), file=sys.stderr)
+    return summary
+
+
+def _error_result(name: str, error: Exception) -> dict[str, object]:
+    return {"repo": name, "status": "error", "error": Redactor().redact(str(error)), "jobs": []}
+
+
 def _run_all(args: argparse.Namespace) -> int:
     config = _global_config()
     root = Path(args.root or config.get("root") or "~/Projects").expanduser()
@@ -69,15 +104,13 @@ def _run_all(args: argparse.Namespace) -> int:
         for future in as_completed(futures):
             repo = futures[future]
             try:
-                result = future.result()
-                results.append((repo.name, result["status"]))
+                results.append(future.result())
             except Exception as error:
-                results.append((repo.name, "error"))
+                results.append(_error_result(repo.name, error))
                 print(Redactor().redact(f"警告: {repo.name}: {error}"), file=sys.stderr)
-    print("| リポジトリ | 結果 |\n|---|---|")
-    for name, status in sorted(results):
-        print(f"| {name} | {status} |")
-    return 1 if any(status not in {"success"} for _, status in results) else 0
+    summary = _publish(results, args, config, latest=True)
+    print(notify.render_markdown(summary), end="")
+    return 0 if summary["status"] == "success" else 1
 
 
 def _watch(args: argparse.Namespace) -> int:
@@ -95,6 +128,7 @@ def _watch(args: argparse.Namespace) -> int:
     branches = args.branches or _patterns(config.get("branches"))
     report = args.report or str(config.get("report", "none"))
     while True:
+        cycle: list[dict[str, object]] = []
         for repo in repos:
             if not (repo / ".git").exists():
                 continue
@@ -121,9 +155,11 @@ def _watch(args: argparse.Namespace) -> int:
                 try:
                     result = run(repo, pr=pr["number"], report=report)
                     state[key] = sha
+                    cycle.append(result)
                     print(f"{repo.name} PR #{pr['number']}: {result['status']}")
                 except Exception as error:
                     print(Redactor().redact(f"警告: {key}: {error}"), file=sys.stderr)
+                    cycle.append(_error_result(repo.name, error))
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 state_path.write_text(
                     json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -145,13 +181,17 @@ def _watch(args: argparse.Namespace) -> int:
                     try:
                         result = run(repo, ref=sha, report=report)
                         state[key] = sha
+                        cycle.append(result)
                         print(f"{repo.name} {branch}: {result['status']}")
                     except Exception as error:
                         print(Redactor().redact(f"警告: {key}: {error}"), file=sys.stderr)
+                        cycle.append(_error_result(repo.name, error))
                     state_path.parent.mkdir(parents=True, exist_ok=True)
                     state_path.write_text(
                         json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                     )
+        if cycle:
+            _publish(cycle, args, config, latest=True)
         if args.once:
             return 0
         time.sleep(args.interval)
@@ -203,6 +243,15 @@ def _launchd(args: argparse.Namespace) -> int:
     return 0
 
 
+def _output_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--output", help="集計の出力先（.json なら JSON、それ以外は Markdown）")
+    parser.add_argument(
+        "--discord",
+        action="store_true",
+        help=f"環境変数 {notify.DEFAULT_WEBHOOK_ENV} の Discord Webhook に集計を送信",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="local-ci", description="Mac 上で CI を実行します")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -217,6 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--report", choices=["none", "status", "comment"], default="none")
     run_parser.add_argument("--dry-run-report", action="store_true")
     run_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    _output_options(run_parser)
     plan_parser = commands.add_parser("plan", help="ジョブの実行計画を表示")
     plan_parser.add_argument("repo", type=Path)
     plan_parser.add_argument("--ref")
@@ -230,12 +280,15 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument("--jobs", type=int)
     all_parser.add_argument("--report", choices=["none", "status", "comment"])
     all_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    _output_options(all_parser)
     watch = commands.add_parser("watch", help="PR とブランチの新コミットを監視")
     watch.add_argument("--once", action="store_true")
     watch.add_argument("--root")
     watch.add_argument("--branches", action="append")
     watch.add_argument("--report", choices=["none", "status", "comment"])
     watch.add_argument("--interval", type=int, default=900)
+    watch.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    _output_options(watch)
     launchd = commands.add_parser("launchd", help="launchd 設定を出力・作成")
     launchd_sub = launchd.add_subparsers(dest="action", required=True)
     install = launchd_sub.add_parser("install")
@@ -268,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.quiet,
             )
             print(f"{result['repo']}: {result['status']} ({result['run_dir']})")
+            if args.output or args.discord:
+                _publish([result], args, _global_config())
             return 0 if result["status"] == "success" else 1
         if args.command == "plan":
             result = plan(args.repo, args.ref)
