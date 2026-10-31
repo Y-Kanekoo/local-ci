@@ -1,0 +1,16 @@
+jobs:
+  frontend:lint:
+    kind: lint
+    workdir: frontend
+    run: npm run lint
+  backend:test:
+    kind: test
+    workdir: backend
+    run: uv run pytest
+  e2e:browser:
+    kind: e2e
+    workdir: e2e
+    run: npx playwright test
+    needs_services: true
+    allow_failure: true
+    skip: true

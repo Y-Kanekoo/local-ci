@@ -1,0 +1,11 @@
+setup: npm ci
+jobs:
+  lint:
+    kind: lint
+    run: npm run lint
+  typecheck:
+    kind: typecheck
+    run: npm run typecheck
+  test:
+    kind: test
+    run: npm test

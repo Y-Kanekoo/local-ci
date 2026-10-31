@@ -1,0 +1,7 @@
+jobs:
+  lint:
+    run: ["uv run ruff check .", "uv run ruff format --check ."]
+    kind: lint
+  test:
+    run: "uv run pytest -q"
+    kind: test
