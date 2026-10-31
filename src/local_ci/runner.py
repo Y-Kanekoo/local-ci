@@ -14,7 +14,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from local_ci.config import Config, Job, command_args, load_config
+from local_ci.config import STAGE_ORDER, STAGES, Config, Job, command_args, load_config
+from local_ci.notify import FAILED, stage_summary
 from local_ci.security import Redactor
 
 
@@ -203,6 +204,7 @@ def _run_job(
     result: dict[str, object] = {
         "name": job.name,
         "kind": job.kind,
+        "stage": job.stage,
         "status": "skipped",
         "exit_code": None,
         "duration": 0.0,
@@ -214,7 +216,7 @@ def _run_job(
     with log_path.open("w", encoding="utf-8") as log:
         if forced_skip or job.skip or job.needs_services:
             reason = forced_skip or (
-                "設定によりスキップしました"
+                (job.skip_reason or "設定によりスキップしました")
                 if job.skip
                 else job.skip_reason or "外部サービスが必要なためスキップしました"
             )
@@ -276,9 +278,26 @@ def _summary(result: dict[str, object], redactor: Redactor) -> str:
         f"- config_source: `{result['config_source']}`",
         f"- 結果: **{result['status']}**",
         "",
-        "| ジョブ | 種類 | 結果 | 秒 | ログ |",
-        "|---|---|---|---:|---|",
+        "## ステージ別",
+        "",
+        "| ステージ | 結果 | ジョブ | 成功 | 失敗 | スキップ | スキップ理由 |",
+        "|---|---|---:|---:|---:|---:|---|",
     ]
+    for entry in result.get("stages") or stage_summary(result["jobs"]):
+        reasons = " / ".join(entry["skip_reasons"]) or "-"
+        lines.append(
+            f"| {entry['stage']} | {entry['status']} | {entry['jobs']} | {entry['success']} "
+            f"| {entry['failed']} | {entry['skipped']} | {reasons} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## ジョブ",
+            "",
+            "| ジョブ | ステージ | 種類 | 結果 | 秒 | ログ |",
+            "|---|---|---|---|---:|---|",
+        ]
+    )
     before = [hook for hook in result["hooks"] if hook["phase"] == "before"]
     after = [hook for hook in result["hooks"] if hook["phase"] == "after"]
     hints = []
@@ -288,7 +307,14 @@ def _summary(result: dict[str, object], redactor: Redactor) -> str:
             if job["status"] == "failed" and job["allow_failure"]
             else job["status"]
         )
-        cells = [job["name"], job["kind"], status, job["duration"], f"`{job['log_path']}`"]
+        cells = [
+            job["name"],
+            job.get("stage", job["kind"]),
+            job["kind"],
+            status,
+            job["duration"],
+            f"`{job['log_path']}`",
+        ]
         lines.append("| " + " | ".join(str(cell) for cell in cells) + " |")
         if job.get("hint"):
             hints.append(str(job["hint"]))
@@ -315,7 +341,7 @@ def _progress(
 def _planned_job(job: Job, worktree: Path) -> dict[str, object]:
     reason = None
     if job.skip:
-        reason = "設定によりスキップします"
+        reason = job.skip_reason or "設定によりスキップします"
     elif job.needs_services:
         reason = job.skip_reason or "外部サービスが必要なためスキップします"
     else:
@@ -333,6 +359,7 @@ def _planned_job(job: Job, worktree: Path) -> dict[str, object]:
     return {
         "name": job.name,
         "kind": job.kind,
+        "stage": job.stage,
         "workdir": job.workdir,
         "run": job.run,
         "skip": reason is not None,
@@ -360,6 +387,7 @@ def plan(repo: Path, ref: str | None = None) -> dict[str, object]:
                 "ref": label,
                 "sha": sha,
                 "config_source": config.source,
+                "fail_fast": config.fail_fast,
                 "jobs": [_planned_job(job, worktree) for job in jobs],
                 "before": [_planned_job(job, worktree) for job in config.before],
                 "after": [_planned_job(job, worktree) for job in config.after],
@@ -381,7 +409,17 @@ def run(
     dry_run_report: bool = False,
     quiet: bool = False,
     progress_repo: bool = False,
+    stages: set[str] | None = None,
+    fail_fast: bool | None = None,
 ) -> dict[str, object]:
+    """ref の専用 worktree でジョブを実行する。
+
+    stages を指定すると、その段階（static・unit・api・e2e）のジョブと setup だけを実行する。
+    fail_fast（None なら設定の fail_fast）が真なら、許可されていない失敗が出た段階より
+    後の段階のジョブを理由付きでスキップする。同じ段階の残りのジョブは実行する。
+    """
+    if stages is not None and (not stages or set(stages) - set(STAGES)):
+        raise ValueError(f"stage は {', '.join(STAGES)} から指定してください")
     repo = repo.expanduser().resolve()
     repo = Path(git(repo, "rev-parse", "--show-toplevel"))
     sha, label = resolve_sha(repo, ref, pr)
@@ -424,6 +462,7 @@ def run(
             for job in config.jobs
             if job.kind != "setup"
             if (only is None or job.kind in only) and (skip is None or job.kind not in skip)
+            if stages is None or job.stage in stages
         ]
         jobs = [
             job
@@ -432,7 +471,7 @@ def run(
             or (
                 job.kind == "setup"
                 and (skip is None or "setup" not in skip)
-                and (selected or only is None or "setup" in only)
+                and (selected or (only is None and stages is None) or (only and "setup" in only))
             )
         ]
         if not jobs:
@@ -444,6 +483,9 @@ def run(
         if config.setup and jobs and (skip is None or "setup" not in skip):
             jobs.insert(0, Job("setup", config.setup, "setup"))
         progress_name = repo_name(repo) if progress_repo else None
+        stop_early = config.fail_fast if fail_fast is None else fail_fast
+        result["fail_fast"] = stop_early
+        failed_stage: str | None = None
         before_failed = False
         try:
             for hook in config.before:
@@ -463,15 +505,24 @@ def run(
             for job in jobs:
                 reporter.status(job.name, "pending", "ジョブを実行中")
                 _progress(job, None, progress_name, quiet, redactor)
-                job_result = _run_job(
-                    job,
-                    worktree,
-                    run_dir,
-                    redactor,
-                    template,
-                    "before フックが失敗したためスキップしました" if before_failed else None,
-                )
+                forced = None
+                if before_failed:
+                    forced = "before フックが失敗したためスキップしました"
+                elif failed_stage is not None and STAGE_ORDER.get(job.stage, 99) > STAGE_ORDER.get(
+                    failed_stage, 99
+                ):
+                    forced = (
+                        f"前のステージ {failed_stage} が失敗したためスキップしました（fail_fast）"
+                    )
+                job_result = _run_job(job, worktree, run_dir, redactor, template, forced)
                 result["jobs"].append(job_result)
+                if (
+                    stop_early
+                    and failed_stage is None
+                    and job_result["status"] in FAILED
+                    and not job.allow_failure
+                ):
+                    failed_stage = job.stage
                 _progress(job, job_result, progress_name, quiet, redactor)
                 state = (
                     "success"
@@ -489,6 +540,7 @@ def run(
                 else "success"
             )
         finally:
+            result["stages"] = stage_summary(result["jobs"])
             for hook in config.after:
                 _progress(hook, None, progress_name, quiet, redactor)
                 try:

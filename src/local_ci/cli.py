@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 from local_ci import notify
+from local_ci.config import STAGES, parse_stages
 from local_ci.runner import git, home, plan, run
 from local_ci.security import Redactor
 
@@ -95,10 +96,20 @@ def _run_all(args: argparse.Namespace) -> int:
     if workers < 1:
         raise ValueError("--jobs は 1 以上を指定してください")
     repos = scan_repos(root, include, exclude)
+    stages = parse_stages(args.stage)
+    fail_fast = True if args.fail_fast else None
     results = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run, repo, report=report, quiet=args.quiet, progress_repo=True): repo
+            executor.submit(
+                run,
+                repo,
+                report=report,
+                quiet=args.quiet,
+                progress_repo=True,
+                stages=stages,
+                fail_fast=fail_fast,
+            ): repo
             for repo in repos
         }
         for future in as_completed(futures):
@@ -252,6 +263,18 @@ def _output_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _stage_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--stage",
+        help=f"対象ステージをカンマ区切りで指定（{','.join(STAGES)}）。setup は自動で含む",
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="失敗したステージより後を理由付きでスキップ（設定の fail_fast: true と同じ）",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="local-ci", description="Mac 上で CI を実行します")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -266,11 +289,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--report", choices=["none", "status", "comment"], default="none")
     run_parser.add_argument("--dry-run-report", action="store_true")
     run_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    _stage_options(run_parser)
     _output_options(run_parser)
     plan_parser = commands.add_parser("plan", help="ジョブの実行計画を表示")
     plan_parser.add_argument("repo", type=Path)
     plan_parser.add_argument("--ref")
     plan_parser.add_argument("--json", action="store_true")
+    plan_parser.add_argument("--stage", help="表示するステージをカンマ区切りで指定")
     logs = commands.add_parser("logs", help="最新の結果を表示")
     logs.add_argument("repo")
     all_parser = commands.add_parser("run-all", help="複数リポジトリを実行")
@@ -280,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument("--jobs", type=int)
     all_parser.add_argument("--report", choices=["none", "status", "comment"])
     all_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    _stage_options(all_parser)
     _output_options(all_parser)
     watch = commands.add_parser("watch", help="PR とブランチの新コミットを監視")
     watch.add_argument("--once", action="store_true")
@@ -319,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.report,
                 args.dry_run_report,
                 args.quiet,
+                stages=parse_stages(args.stage),
+                fail_fast=True if args.fail_fast else None,
             )
             print(f"{result['repo']}: {result['status']} ({result['run_dir']})")
             if args.output or args.discord:
@@ -326,17 +354,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if result["status"] == "success" else 1
         if args.command == "plan":
             result = plan(args.repo, args.ref)
+            stages = parse_stages(args.stage)
+            if stages is not None:
+                result["jobs"] = [
+                    job
+                    for job in result["jobs"]
+                    if job["stage"] in stages or job["stage"] == "setup"
+                ]
             if args.json:
                 print(json.dumps(result, ensure_ascii=False, indent=2))
             else:
                 print(f"{result['repo']} ({result['ref']}, {result['sha'][:7]})")
                 print(f"config_source: {result['config_source']}")
+                print(f"fail_fast: {str(result['fail_fast']).lower()}")
                 for phase in ("before", "jobs", "after"):
                     for job in result[phase]:
                         reason = f" [skip: {job['skip_reason']}]" if job["skip"] else ""
                         print(
                             f"{job['name']} | {job['kind']} | {job['workdir']} | "
-                            f"{' ; '.join(job['run'])}{reason}"
+                            f"{' ; '.join(job['run'])} | stage={job['stage']}{reason}"
                         )
             return 0
         if args.command == "logs":

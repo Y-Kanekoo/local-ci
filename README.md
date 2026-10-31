@@ -17,15 +17,61 @@ uv tool install .
 ```sh
 local-ci run ~/Projects/my-app
 local-ci run ~/Projects/my-app --ref main --only lint,test
+local-ci run ~/Projects/my-app --stage static,unit --fail-fast
 local-ci run ~/Projects/my-app --pr 42 --report comment
 local-ci plan ~/Projects/my-app --ref main
 local-ci plan ~/Projects/my-app --json
 local-ci logs my-app
 ```
 
-設定の優先順位は、対象コミットの `.local-ci.yml`、`$LOCAL_CI_HOME/repos/<repo名>.yml`、自動検出です。外部設定は対象リポジトリへコミットせずに使えます。`config_source` を `result.json`、`summary.md`、`plan` に記録します。`--only` / `--skip` は `kind` のカンマ区切りです。`--keep-worktree` で作成した worktree を残せます。`LOCAL_CI_HOME` で保存先（既定 `~/.local-ci`）を変更できます。
+設定の優先順位は、対象コミットの `.local-ci.yml`、`$LOCAL_CI_HOME/repos/<repo名>.yml`、自動検出です。外部設定は対象リポジトリへコミットせずに使えます。`config_source` を `result.json`、`summary.md`、`plan` に記録します。`--only` / `--skip` は `kind` のカンマ区切り、`--stage` はステージ（下記）のカンマ区切りで、併用すると両方の条件に合うジョブだけを実行します。`--keep-worktree` で作成した worktree を残せます。`LOCAL_CI_HOME` で保存先（既定 `~/.local-ci`）を変更できます。
 
-`run` は各ジョブ・フックの開始と終了を stderr に表示します。`--quiet` で抑制できます。`run-all` では行の先頭にリポジトリ名を表示します。`plan` は指定 ref の一時 worktree で設定とファイルを読み、ジョブの名前・kind・workdir・コマンド・スキップ予定と理由を表示してから worktree を削除します。`--json` も利用できます。
+`run` は各ジョブ・フックの開始と終了を stderr に表示します。`--quiet` で抑制できます。`run-all` では行の先頭にリポジトリ名を表示します。`plan` は指定 ref の一時 worktree で設定とファイルを読み、ジョブの名前・kind・workdir・コマンド・ステージ・スキップ予定と理由、`fail_fast` を表示してから worktree を削除します。`--json`、`--stage` も利用できます。
+
+## テストの4段階（stage）
+
+各ジョブは `stage` を持ち、**static（静的解析）→ unit（ユニットテスト）→ api（API・契約テスト）→ e2e（E2E）** の順に実行します。development-hub のテスト標準（docs/testing-standard.md）と同じ流れです。
+
+| kind | 既定の stage | 例 |
+|---|---|---|
+| `setup` | setup（常に最初。`--stage` で絞っても実行） | 依存の導入 |
+| `lint` / `typecheck` | static | ruff、eslint、mypy、tsc、秘密情報スキャン |
+| `test` / `build` | unit | pytest、vitest、ビルド |
+| `api` | api | HTTP API・モジュール境界の契約テスト |
+| `e2e` | e2e | Playwright |
+
+- `stage` を書けば kind と別に指定できます（例: `kind: test` で `stage: api`）。値は `static` / `unit` / `api` / `e2e` のいずれかです。
+- 並びは「ステージ順 → 同じステージ内は kind 順」で固定します。stage を書かない従来の設定は、これまでと同じ順序になります。`order: config` のときは従来どおり設定順です。
+- `fail_fast: true`（または `--fail-fast`）では、許可されていない失敗が出たステージより後のステージを「前のステージ static が失敗したためスキップしました（fail_fast）」の理由付きで `skipped` にします。同じステージの残りのジョブは実行し、失敗をまとめて確認できます。既定は従来どおり全ジョブを実行します。
+- スキップする段階は `skip: true` と `skip_reason: 理由` を書きます。理由は `result.json`、`summary.md`、ログに残ります（`skip_reason` だけを書くと設定エラー）。
+- `result.json` の `stages` と `summary.md` の「ステージ別」表に、ステージごとの結果・件数・スキップ理由を記録します。`run-all` と `watch` の集計にもリポジトリ×ステージの表と `stage_counts` を出力します。
+
+```yaml
+setup: uv sync --locked --dev
+fail_fast: true
+jobs:
+  lint:
+    kind: lint
+    run: ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+  typecheck:
+    kind: typecheck
+    run: uv run --locked mypy
+  secrets:
+    kind: lint
+    run: uv run --locked python scripts/scan_secrets.py
+  unit:
+    kind: test
+    run: uv run --locked pytest tests/unit --cov --cov-fail-under=80
+  api:
+    kind: api
+    run: uv run --locked pytest tests/api
+  e2e:
+    kind: e2e
+    run: npx playwright test --grep @smoke
+    skip: true
+    skip_reason: UI がないため（docs/TESTING.md のスキップ記録を参照）
+include_auto: false
+```
 
 ## 設定ファイル
 
@@ -54,7 +100,7 @@ jobs:
 include_auto: false
 ```
 
-`kind` は `setup` / `lint` / `typecheck` / `test` / `build` / `e2e`。この順に安定ソートし、モノレポでも全 setup を先に実行します。設定に書いた順を維持する場合だけ `order: config` を指定します。`timeout` の既定は 1800 秒です。`setup` は選択されたジョブに共通の前処理です。`needs_services: true` のジョブは外部サービスが必要なため `skipped` にします。サービスをフックで起動して実行する場合はこの値を外します。`skip: true` は明示的なスキップです。`allow_failure: true` の失敗は `failed (allowed)` と表示し、全体の失敗には含めません。`include_auto: true` は名前が重複しない自動検出ジョブを追加します。さらに [examples](examples) を参照してください。
+`kind` は `setup` / `lint` / `typecheck` / `test` / `build` / `api` / `e2e`。ステージ順・kind 順に安定ソートし、モノレポでも全 setup を先に実行します。設定に書いた順を維持する場合だけ `order: config` を指定します。`timeout` の既定は 1800 秒です。`setup` は選択されたジョブに共通の前処理です。`needs_services: true` のジョブは外部サービスが必要なため `skipped` にします。サービスをフックで起動して実行する場合はこの値を外します。`skip: true` は明示的なスキップです。`allow_failure: true` の失敗は `failed (allowed)` と表示し、全体の失敗には含めません。`include_auto: true` は名前が重複しない自動検出ジョブを追加します。さらに [examples](examples) を参照してください。
 
 ### サービスの起動と停止
 
@@ -81,16 +127,16 @@ Playwright の e2e ジョブには `CI=1` と `PLAYWRIGHT_FORCE_TTY=0` を付与
 
 | ファイル | ジョブ |
 |---|---|
-| `package.json` | ロックファイルに応じた npm / pnpm / yarn install、存在する lint / typecheck / test / e2e / build scripts |
+| `package.json` | ロックファイルに応じた npm / pnpm / yarn install、存在する lint / typecheck / test / build / e2e scripts、`test:api` があれば api ステージ（`test:unit` と `test:api` が両方あれば unit は `test:unit`） |
 | `tsconfig.json` | typecheck script がなければ `npx tsc --noEmit` |
 | `@playwright/test` または `playwright.config.*` | e2e script がなければ `npx playwright test` |
-| `pyproject.toml` | `uv.lock` があれば `uv sync --all-extras --dev`、ruff があれば check と format、mypy / pyright があれば型検査、pytest |
+| `pyproject.toml` | `uv.lock` があれば `uv sync --all-extras --dev`、ruff があれば check と format、mypy / pyright があれば型検査、pytest（`tests/api/` があれば unit は `pytest --ignore=tests/api`、api ステージは `pytest tests/api`） |
 | `Cargo.toml` | `cargo fmt --check`、`cargo clippy`、`cargo test` |
 | `CMakeLists.txt` | cmake configure / build、ctest |
 | `pom.xml` / `mvnw` | Maven test |
 | `go.mod` | `go vet ./...`、`go test ./...` |
 
-リポジトリ直下（または e2e のディレクトリ）に `compose.yaml` / `docker-compose.yml` などがある場合、自動検出した e2e は DB 等の外部サービスが必要とみなして理由付きで `skipped` にします。`before` フックでサービスを起動する設定を書けば実行できます（例: [examples/testcase-manager.local-ci.yml](examples/testcase-manager.local-ci.yml)）。明示設定した e2e はこの判定の対象外です。
+リポジトリ直下（または e2e のディレクトリ）に `compose.yaml` / `docker-compose.yml` などがある場合、自動検出した e2e は DB 等の外部サービスが必要とみなして理由付きで `skipped` にします。`before` フックでサービスを起動する設定を書けば実行できます（例: [examples/testcase-manager.local-ci.yml](examples/testcase-manager.local-ci.yml)）。明示設定した e2e はこの判定の対象外です。自動検出のジョブにも上表の既定 stage を付けます。
 
 ルートに上記ファイルがなければ直下 1 階層のディレクトリを検出し、`frontend:lint` のように命名します。PATH にないツールのジョブは理由をログに書いて `skipped` とします。ログ名では `:` や `/` を `__` に置換し、結果中のジョブ名は維持します。Node 依存は各 worktree 内へ新規導入し、パッケージマネージャーのキャッシュを利用します。
 
