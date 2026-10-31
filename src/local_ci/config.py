@@ -10,6 +10,9 @@ from pathlib import Path
 import yaml
 
 KINDS = {"lint", "typecheck", "test", "e2e", "build", "setup"}
+KIND_ORDER = {
+    kind: index for index, kind in enumerate(("setup", "lint", "typecheck", "test", "build", "e2e"))
+}
 MARKERS = {
     "package.json",
     "pyproject.toml",
@@ -41,6 +44,9 @@ class Job:
 class Config:
     jobs: list[Job]
     setup: list[str] = field(default_factory=list)
+    before: list[Job] = field(default_factory=list)
+    after: list[Job] = field(default_factory=list)
+    source: str = "auto"
 
 
 def command_args(command: str) -> list[str]:
@@ -74,11 +80,11 @@ def _commands(value: object) -> list[str]:
     return commands
 
 
-def _job(name: str, raw: object) -> Job:
+def _job(name: str, raw: object, hook_kind: str | None = None) -> Job:
     if not isinstance(raw, dict):
         raise ValueError(f"ジョブ {name} はマッピングで指定してください")
-    kind = raw.get("kind", name.split(":")[-1])
-    if kind not in KINDS:
+    kind = hook_kind or raw.get("kind", name.split(":")[-1])
+    if hook_kind is None and kind not in KINDS:
         raise ValueError(f"ジョブ {name} の kind が不正です: {kind}")
     env = raw.get("env", {})
     if not isinstance(env, dict) or any(
@@ -109,20 +115,48 @@ def _job(name: str, raw: object) -> Job:
     )
 
 
-def load_config(root: Path) -> Config:
-    auto = detect(root)
+def _hooks(raw: object, phase: str) -> list[Job]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{phase} はフックの配列で指定してください")
+    hooks = []
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
+            raise ValueError(f"{phase} の各要素には name が必要です")
+        if set(item) - {"name", "run", "workdir", "env", "timeout"}:
+            raise ValueError(f"{phase} の要素に使用できないキーがあります: {item['name']}")
+        hooks.append(_job(item["name"], item, phase))
+    if len({hook.name for hook in hooks}) != len(hooks):
+        raise ValueError(f"{phase} の name は重複できません")
+    return hooks
+
+
+def load_config(root: Path, external_path: Path | None = None) -> Config:
     path = root / ".local-ci.yml"
     if not path.exists():
-        return Config(auto)
+        if external_path is None or not external_path.exists():
+            return Config(sorted(detect(root), key=lambda job: KIND_ORDER[job.kind]))
+        path = external_path
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict) or not isinstance(raw.get("jobs", {}), dict):
-        raise ValueError(".local-ci.yml の jobs はマッピングで指定してください")
+        raise ValueError(f"{path} の jobs はマッピングで指定してください")
     jobs = [_job(name, value) for name, value in raw.get("jobs", {}).items()]
     if raw.get("include_auto", False):
         existing = {job.name for job in jobs}
-        jobs.extend(job for job in auto if job.name not in existing)
+        jobs.extend(job for job in detect(root) if job.name not in existing)
     setup = _commands(raw["setup"]) if "setup" in raw else []
-    return Config(jobs, setup)
+    order = raw.get("order", "kind")
+    if order not in {"kind", "config"}:
+        raise ValueError("order は kind または config を指定してください")
+    if order != "config":
+        jobs.sort(key=lambda job: KIND_ORDER[job.kind])
+    source = ".local-ci.yml" if path == root / ".local-ci.yml" else str(path)
+    return Config(
+        jobs,
+        setup,
+        _hooks(raw.get("before", []), "before"),
+        _hooks(raw.get("after", []), "after"),
+        source,
+    )
 
 
 def _node(root: Path, prefix: str) -> list[Job]:

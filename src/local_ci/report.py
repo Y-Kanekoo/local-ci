@@ -112,9 +112,15 @@ class Reporter:
             "| ジョブ | 結果 | 秒 |",
             "|---|---|---:|",
         ]
-        for job in result["jobs"]:
-            lines.append(f"| {job['name']} | {job['status']} | {job['duration']} |")
-        for job in result["jobs"]:
+        entries = [*result.get("hooks", []), *result["jobs"]]
+        for job in entries:
+            status = (
+                "failed (allowed)"
+                if job["status"] == "failed" and job.get("allow_failure")
+                else job["status"]
+            )
+            lines.append(f"| {job['name']} | {status} | {job['duration']} |")
+        for job in entries:
             if job["status"] in {"failed", "timeout"}:
                 path = Path(job["log_path"])
                 tail = path.read_text(encoding="utf-8").splitlines()[-40:]

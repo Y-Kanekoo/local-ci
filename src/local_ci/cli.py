@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from local_ci.runner import git, home, run
+from local_ci.runner import git, home, plan, run
 from local_ci.security import Redactor
 
 
@@ -62,7 +62,10 @@ def _run_all(args: argparse.Namespace) -> int:
     repos = scan_repos(root, include, exclude)
     results = []
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(run, repo, report=report): repo for repo in repos}
+        futures = {
+            executor.submit(run, repo, report=report, quiet=args.quiet, progress_repo=True): repo
+            for repo in repos
+        }
         for future in as_completed(futures):
             repo = futures[future]
             try:
@@ -213,6 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--keep-worktree", action="store_true")
     run_parser.add_argument("--report", choices=["none", "status", "comment"], default="none")
     run_parser.add_argument("--dry-run-report", action="store_true")
+    run_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
+    plan_parser = commands.add_parser("plan", help="ジョブの実行計画を表示")
+    plan_parser.add_argument("repo", type=Path)
+    plan_parser.add_argument("--ref")
+    plan_parser.add_argument("--json", action="store_true")
     logs = commands.add_parser("logs", help="最新の結果を表示")
     logs.add_argument("repo")
     all_parser = commands.add_parser("run-all", help="複数リポジトリを実行")
@@ -221,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument("--exclude", action="append")
     all_parser.add_argument("--jobs", type=int)
     all_parser.add_argument("--report", choices=["none", "status", "comment"])
+    all_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
     watch = commands.add_parser("watch", help="PR とブランチの新コミットを監視")
     watch.add_argument("--once", action="store_true")
     watch.add_argument("--root")
@@ -256,9 +265,25 @@ def main(argv: list[str] | None = None) -> int:
                 args.keep_worktree,
                 args.report,
                 args.dry_run_report,
+                args.quiet,
             )
             print(f"{result['repo']}: {result['status']} ({result['run_dir']})")
             return 0 if result["status"] == "success" else 1
+        if args.command == "plan":
+            result = plan(args.repo, args.ref)
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            else:
+                print(f"{result['repo']} ({result['ref']}, {result['sha'][:7]})")
+                print(f"config_source: {result['config_source']}")
+                for phase in ("before", "jobs", "after"):
+                    for job in result[phase]:
+                        reason = f" [skip: {job['skip_reason']}]" if job["skip"] else ""
+                        print(
+                            f"{job['name']} | {job['kind']} | {job['workdir']} | "
+                            f"{' ; '.join(job['run'])}{reason}"
+                        )
+            return 0
         if args.command == "logs":
             root = home() / "runs" / Path(args.repo).name
             dirs = (
