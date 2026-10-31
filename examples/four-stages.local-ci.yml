@@ -1,0 +1,25 @@
+# テスト標準の4段階（static → unit → api → e2e）の例。development-hub のテンプレートと同じ形。
+setup: uv sync --locked --dev
+fail_fast: true
+jobs:
+  lint:
+    kind: lint
+    run: ["uv run --locked ruff check .", "uv run --locked ruff format --check ."]
+  typecheck:
+    kind: typecheck
+    run: uv run --locked mypy
+  secrets:
+    kind: lint
+    run: uv run --locked python scripts/scan_secrets.py
+  unit:
+    kind: test
+    run: uv run --locked pytest tests/unit --cov --cov-fail-under=80
+  api:
+    kind: api
+    run: uv run --locked pytest tests/api
+  e2e:
+    kind: e2e
+    run: npx playwright test --grep @smoke
+    skip: true
+    skip_reason: UI がないため（docs/TESTING.md のスキップ記録を参照）
+include_auto: false

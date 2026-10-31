@@ -1,3 +1,4 @@
+fail_fast: true
 jobs:
   lint:
     run: ["uv run ruff check .", "uv run ruff format --check ."]

@@ -9,9 +9,22 @@ from pathlib import Path
 
 import yaml
 
-KINDS = {"lint", "typecheck", "test", "e2e", "build", "setup"}
+KINDS = {"lint", "typecheck", "test", "api", "e2e", "build", "setup"}
 KIND_ORDER = {
-    kind: index for index, kind in enumerate(("setup", "lint", "typecheck", "test", "build", "e2e"))
+    kind: index
+    for index, kind in enumerate(("setup", "lint", "typecheck", "test", "build", "api", "e2e"))
+}
+# テスト標準の4段階（static → unit → api → e2e）。setup は常に最初に実行する。
+STAGES = ("static", "unit", "api", "e2e")
+STAGE_ORDER = {stage: index for index, stage in enumerate(("setup", *STAGES))}
+KIND_STAGE = {
+    "setup": "setup",
+    "lint": "static",
+    "typecheck": "static",
+    "test": "unit",
+    "build": "unit",
+    "api": "api",
+    "e2e": "e2e",
 }
 MARKERS = {
     "package.json",
@@ -45,6 +58,30 @@ class Job:
     skip: bool = False
     pass_env: list[str] = field(default_factory=list)
     skip_reason: str | None = None
+    stage: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.stage:
+            self.stage = KIND_STAGE.get(self.kind, self.kind)
+
+
+def job_order(job: Job) -> tuple[int, int]:
+    """ステージ順、同じステージ内は kind 順（従来の kind 順と同じ並びになる）。"""
+    return STAGE_ORDER.get(job.stage, len(STAGE_ORDER)), KIND_ORDER.get(job.kind, len(KIND_ORDER))
+
+
+def parse_stages(value: str | None) -> set[str] | None:
+    """`--stage static,unit` を検証して集合にする。"""
+    if not value:
+        return None
+    stages = {item.strip() for item in value.split(",") if item.strip()}
+    unknown = stages - set(STAGES)
+    if not stages or unknown:
+        raise ValueError(
+            f"--stage には {', '.join(STAGES)} をカンマ区切りで指定してください: "
+            f"{', '.join(sorted(unknown)) or value}"
+        )
+    return stages
 
 
 @dataclass
@@ -54,6 +91,7 @@ class Config:
     before: list[Job] = field(default_factory=list)
     after: list[Job] = field(default_factory=list)
     source: str = "auto"
+    fail_fast: bool = False
 
 
 def command_args(command: str) -> list[str]:
@@ -108,6 +146,19 @@ def _job(name: str, raw: object, hook_kind: str | None = None) -> Job:
     workdir = raw.get("workdir", ".")
     if not isinstance(workdir, str) or Path(workdir).is_absolute() or ".." in Path(workdir).parts:
         raise ValueError(f"ジョブ {name} の workdir は相対パスで指定してください")
+    stage = raw.get("stage", "") if hook_kind is None else ""
+    if stage and (kind == "setup" or stage not in STAGES):
+        raise ValueError(
+            f"ジョブ {name} の stage は {', '.join(STAGES)} のいずれかで指定してください"
+            "（kind: setup には指定できません）"
+        )
+    skip_reason = raw.get("skip_reason") if hook_kind is None else None
+    if skip_reason is not None and (
+        not isinstance(skip_reason, str) or not skip_reason.strip() or not raw.get("skip", False)
+    ):
+        raise ValueError(
+            f"ジョブ {name} の skip_reason は skip: true と一緒に文字列で指定してください"
+        )
     return Job(
         name,
         _commands(raw.get("run")),
@@ -119,6 +170,8 @@ def _job(name: str, raw: object, hook_kind: str | None = None) -> Job:
         bool(raw.get("allow_failure", False)),
         bool(raw.get("skip", False)),
         pass_env,
+        skip_reason.strip() if skip_reason else None,
+        stage,
     )
 
 
@@ -141,7 +194,7 @@ def load_config(root: Path, external_path: Path | None = None) -> Config:
     path = root / ".local-ci.yml"
     if not path.exists():
         if external_path is None or not external_path.exists():
-            return Config(sorted(detect(root), key=lambda job: KIND_ORDER[job.kind]))
+            return Config(sorted(detect(root), key=job_order))
         path = external_path
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict) or not isinstance(raw.get("jobs", {}), dict):
@@ -155,7 +208,10 @@ def load_config(root: Path, external_path: Path | None = None) -> Config:
     if order not in {"kind", "config"}:
         raise ValueError("order は kind または config を指定してください")
     if order != "config":
-        jobs.sort(key=lambda job: KIND_ORDER[job.kind])
+        jobs.sort(key=job_order)
+    fail_fast = raw.get("fail_fast", False)
+    if not isinstance(fail_fast, bool):
+        raise ValueError("fail_fast は true または false で指定してください")
     source = ".local-ci.yml" if path == root / ".local-ci.yml" else str(path)
     return Config(
         jobs,
@@ -163,6 +219,7 @@ def load_config(root: Path, external_path: Path | None = None) -> Config:
         _hooks(raw.get("before", []), "before"),
         _hooks(raw.get("after", []), "after"),
         source,
+        fail_fast,
     )
 
 
@@ -188,15 +245,19 @@ def _node(root: Path, prefix: str) -> list[Job]:
     ]
     workdir = jobs[0].workdir
     scripts = package.get("scripts", {})
-    for name, kind in (
-        ("lint", "lint"),
-        ("typecheck", "typecheck"),
-        ("test", "test"),
-        ("e2e", "e2e"),
-        ("build", "build"),
+    # test:unit と test:api が両方ある場合だけ、test の代わりに段階別のスクリプトを使う
+    # （test が両方を含むことが多く、二重実行を避けるため）。
+    split = "test:unit" in scripts and "test:api" in scripts
+    for name, kind, script in (
+        ("lint", "lint", "lint"),
+        ("typecheck", "typecheck", "typecheck"),
+        ("test", "test", "test:unit" if split else "test"),
+        ("build", "build", "build"),
+        ("api", "api", "test:api"),
+        ("e2e", "e2e", "e2e"),
     ):
-        if name in scripts:
-            jobs.append(Job(prefix + name, [f"{manager} run {name}"], kind, workdir))
+        if script in scripts:
+            jobs.append(Job(prefix + name, [f"{manager} run {script}"], kind, workdir))
     if (root / "tsconfig.json").exists() and "typecheck" not in scripts:
         jobs.append(Job(prefix + "typecheck", ["npx tsc --noEmit"], "typecheck", workdir))
     deps = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
@@ -236,7 +297,12 @@ def _python(root: Path, prefix: str, workdir: str) -> list[Job]:
         if checker in tool or checker in deps:
             jobs.append(Job(prefix + "typecheck", [runner + f"{checker} ."], "typecheck", workdir))
             break
-    jobs.append(Job(prefix + "test", [runner + "pytest"], "test", workdir))
+    if (root / "tests" / "api").is_dir():
+        # tests/api はAPI段階として分け、unit段階では除外する（全テストは両段階で一度ずつ実行）。
+        jobs.append(Job(prefix + "test", [runner + "pytest --ignore=tests/api"], "test", workdir))
+        jobs.append(Job(prefix + "api", [runner + "pytest tests/api"], "api", workdir))
+    else:
+        jobs.append(Job(prefix + "test", [runner + "pytest"], "test", workdir))
     return jobs
 
 
