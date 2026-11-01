@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from local_ci import compare as compare_module
 from local_ci import notify
 from local_ci.config import STAGES, parse_stages
 from local_ci.runner import git, home, plan, run
@@ -296,6 +297,25 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--ref")
     plan_parser.add_argument("--json", action="store_true")
     plan_parser.add_argument("--stage", help="表示するステージをカンマ区切りで指定")
+    compare_parser = commands.add_parser(
+        "compare", help="2つのコミットを同じ設定・段階ごとに実行して比べる（修正の前後比較）"
+    )
+    compare_parser.add_argument("repo", type=Path)
+    compare_parser.add_argument("--base", required=True, help="比較元（修正前）の ref")
+    compare_parser.add_argument("--head", default="HEAD", help="比較先（修正後）の ref")
+    compare_parser.add_argument(
+        "--config",
+        type=Path,
+        help="両方に当てる設定（既定: head の .local-ci.yml → LOCAL_CI_HOME/repos/<name>.yml）",
+    )
+    compare_parser.add_argument(
+        "--stage", help=f"対象ステージをカンマ区切りで指定（{','.join(STAGES)}）"
+    )
+    compare_parser.add_argument("--json", action="store_true", help="JSON で表示")
+    compare_parser.add_argument(
+        "--output", help="比較結果の出力先（.json なら JSON、それ以外は Markdown）"
+    )
+    compare_parser.add_argument("--quiet", action="store_true", help="進捗表示を抑制")
     logs = commands.add_parser("logs", help="最新の結果を表示")
     logs.add_argument("repo")
     all_parser = commands.add_parser("run-all", help="複数リポジトリを実行")
@@ -375,6 +395,23 @@ def main(argv: list[str] | None = None) -> int:
                             f"{' ; '.join(job['run'])} | stage={job['stage']}{reason}"
                         )
             return 0
+        if args.command == "compare":
+            comparison = compare_module.compare(
+                args.repo,
+                args.base,
+                args.head,
+                args.config,
+                parse_stages(args.stage),
+                args.quiet,
+            )
+            if args.output:
+                written = compare_module.write_output(Path(args.output), comparison)
+                print(f"比較結果を書き出しました: {written}", file=sys.stderr)
+            if args.json:
+                print(json.dumps(comparison, ensure_ascii=False, indent=2))
+            else:
+                print(compare_module.render_markdown(comparison), end="")
+            return 0 if comparison["status"] == "ok" else 1
         if args.command == "logs":
             root = home() / "runs" / Path(args.repo).name
             dirs = (

@@ -190,9 +190,20 @@ def _hooks(raw: object, phase: str) -> list[Job]:
     return hooks
 
 
-def load_config(root: Path, external_path: Path | None = None) -> Config:
+def load_config(
+    root: Path, external_path: Path | None = None, override_path: Path | None = None
+) -> Config:
+    """root の設定を読む。
+
+    override_path を指定すると、root の .local-ci.yml の有無に関係なくそのファイルを使う
+    （compare で2つのコミットに同じ設定を当てるため）。
+    """
     path = root / ".local-ci.yml"
-    if not path.exists():
+    if override_path is not None:
+        if not override_path.is_file():
+            raise ValueError(f"設定ファイルが見つかりません: {override_path}")
+        path = override_path
+    elif not path.exists():
         if external_path is None or not external_path.exists():
             return Config(sorted(detect(root), key=job_order))
         path = external_path

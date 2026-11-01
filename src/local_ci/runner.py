@@ -411,8 +411,11 @@ def run(
     progress_repo: bool = False,
     stages: set[str] | None = None,
     fail_fast: bool | None = None,
+    config_path: Path | None = None,
 ) -> dict[str, object]:
     """ref の専用 worktree でジョブを実行する。
+
+    config_path を指定すると、ref の .local-ci.yml や外部設定の代わりにその設定を使う。
 
     stages を指定すると、その段階（static・unit・api・e2e）のジョブと setup だけを実行する。
     fail_fast（None なら設定の fail_fast）が真なら、許可されていない失敗が出た段階より
@@ -449,7 +452,9 @@ def run(
     try:
         git(repo, "worktree", "add", "--detach", str(worktree), sha)
         created = True
-        config: Config = load_config(worktree, root / "repos" / f"{repo_name(repo)}.yml")
+        config: Config = load_config(
+            worktree, root / "repos" / f"{repo_name(repo)}.yml", config_path
+        )
         result["config_source"] = config.source
         template = {
             "repo": repo_name(repo),
