@@ -142,6 +142,19 @@ Playwright の e2e ジョブには `CI=1` と `PLAYWRIGHT_FORCE_TTY=0` を付与
 
 Playwright の Chromium は自動導入しません。未導入なら、対象プロジェクトで `npx playwright install chromium` を実行するか、設定の `setup` に明記してください。
 
+## 修正の前後比較（compare）
+
+標準の適用や修正で「壊れたのか、もともと失敗していたのか」を判定するときは、2つのコミットを同じ設定で実行して比べます。
+
+```bash
+local-ci compare . --base origin/main --head HEAD
+local-ci compare . --base <修正前のSHA> --stage static,unit --output compare.json
+```
+
+- 設定は1つに固定して両方に当てます。優先順は `--config` → head の `.local-ci.yml` → `LOCAL_CI_HOME/repos/<name>.yml`。どれも無いときだけ各コミットの自動検出になり、設定の出所が違えば警告します。
+- fail_fast は常に無効にして全段階を実行します（前段の失敗で後段の回帰が隠れないように）。
+- ジョブ名で突き合わせ、ジョブ・段階ごとに「回帰」「head だけにあるジョブの失敗」「もともと失敗」「修正」を表示します。回帰（head だけのジョブの失敗を含む）があると終了コード 1 です。
+
 ## 結果と GitHub 報告
 
 ログ、`result.json`、`summary.md` は `~/.local-ci/runs/<repo>/<日時>-<sha7>/` に保存します。`local-ci logs <repo>` は最新の summary を表示します。`--report status` は `local-ci/<ジョブ名>` と `local-ci/overall` の commit status を `gh api` で送信します。`--report comment` は PR にサマリと失敗ログ末尾 40 行をコメントし、同じマーカーのコメントがあれば編集します。既定は `--report none` です。`--dry-run-report` は送信内容を表示します。gh の失敗はジョブ結果を変えません。
