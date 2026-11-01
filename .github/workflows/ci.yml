@@ -1,0 +1,30 @@
+# PR 時の検証（development-hub テンプレート v1 の actions-python を基に、.local-ci.yml の段階に合わせた）。
+# 公開リポジトリの標準ランナーは無料。非公開にした場合は無料枠を消費するので見直す。
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - name: setup
+        run: uv sync --locked --dev
+      - name: static（ruff）
+        run: |
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+      - name: unit
+        run: uv run --locked pytest -q
