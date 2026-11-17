@@ -25,14 +25,18 @@ command -v local-ci >/dev/null 2>&1 || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-# push 対象から、削除でない最後のブランチ更新 SHA を選ぶ
+# push 対象から、削除でない最後の更新 SHA を選ぶ。
+# local_ref は通常 refs/heads/<名前> だが、`git push origin HEAD:xxx` のように
+# HEAD を src にした場合は "HEAD" になるため、refs/heads/* で絞らない。
+# タグの push は CI ゲートの対象外とする。
 target_sha=""
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -z "${local_sha:-}" ] && continue
   [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
   case "$local_ref" in
-    refs/heads/*) target_sha="$local_sha" ;;
+    refs/tags/*) continue ;;
   esac
+  target_sha="$local_sha"
 done
 [ -z "$target_sha" ] && exit 0
 
