@@ -3,6 +3,9 @@ jobs:
   lint:
     run: ["uv run ruff check .", "uv run ruff format --check ."]
     kind: lint
+  justification:
+    run: "uv run python scripts/scan_justification.py src scripts"
+    kind: lint
   test:
     run: "uv run pytest -q"
     kind: test
