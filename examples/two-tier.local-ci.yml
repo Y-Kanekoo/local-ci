@@ -1,0 +1,27 @@
+# 2層 CI（恒久運用）の雛形。docs/ci-two-tier.md 参照。
+# 軽い層 = stage static / unit（pre-push で同期実行し、失敗したら push を止める）
+# 重い層 = stage api / e2e（push 後に watch / launchd が非同期実行し、commit status を返す）
+# 自動検出で足りるリポジトリはこのファイル自体が不要。重いジョブの stage 上書きや
+# 明示コマンドが必要なときだけ置く。
+fail_fast: true
+jobs:
+  lint:
+    kind: lint
+    run: ["uv run ruff check .", "uv run ruff format --check ."]
+  typecheck:
+    kind: typecheck
+    run: uv run mypy .
+  unit:
+    kind: test
+    run: uv run pytest tests/unit
+  # 実測で数分を超えるテストは stage を api に寄せて重い層へ回す（pre-push を止めない）
+  full-test:
+    kind: test
+    stage: api
+    run: uv run pytest
+    timeout: 3600
+  e2e:
+    kind: e2e
+    run: npx playwright test
+    timeout: 3600
+include_auto: false
