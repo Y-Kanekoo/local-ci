@@ -2,9 +2,6 @@
 # 公開リポジトリの標準ランナーは無料。非公開にした場合は無料枠を消費するので見直す。
 name: ci
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
