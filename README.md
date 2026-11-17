@@ -28,6 +28,16 @@ local-ci logs my-app
 
 `run` は各ジョブ・フックの開始と終了を stderr に表示します。`--quiet` で抑制できます。`run-all` では行の先頭にリポジトリ名を表示します。`plan` は指定 ref の一時 worktree で設定とファイルを読み、ジョブの名前・kind・workdir・コマンド・ステージ・スキップ予定と理由、`fail_fast` を表示してから worktree を削除します。`--json`、`--stage` も利用できます。
 
+## 2層 CI の恒久運用（ゲート）
+
+検証の正ゲートは local-ci の2層構造とする（2026-11-17 確定の恒久運用。一時的な節約策ではない）。
+
+- **軽い層**（stage `static` + `unit`）: グローバル pre-push フックから `scripts/pre-push-local-ci-gate.sh` を同期実行し、失敗したら push を止める
+- **重い層**（stage `api` + `e2e` と、実測で数分を超えるジョブ）: push は止めず、launchd の `watch --once`（900 秒間隔）が非同期に全ステージを実行し、結果を commit status へ返す
+- GitHub Actions に残すのは定期自動化とクラウド必須（手動トリガーのみ）。新規リポジトリに Actions の開発 CI は原則入れない
+
+詳細な運用ルールと新規リポジトリへの適用手順は [docs/ci-two-tier.md](docs/ci-two-tier.md)、設定の雛形は [examples/two-tier.local-ci.yml](examples/two-tier.local-ci.yml) を参照。
+
 ## テストの4段階（stage）
 
 各ジョブは `stage` を持ち、**static（静的解析）→ unit（ユニットテスト）→ api（API・契約テスト）→ e2e（E2E）** の順に実行します。development-hub のテスト標準（docs/testing-standard.md）と同じ流れです。
@@ -199,7 +209,7 @@ local-ci launchd uninstall
 local-ci cron print
 ```
 
-`launchd install` は `~/Library/LaunchAgents/io.github.y-kanekoo.local-ci.plist` の生成だけを行い、PATH を明示します。表示された `launchctl bootstrap gui/$(id -u) <plist>` をユーザーが手で実行して有効化してください。停止は表示された `launchctl bootout ...` です。`uninstall` は bootout 手順を表示してから plist を削除します。`cron print` は crontab 行を表示するだけです。
+`launchd install` は `~/Library/LaunchAgents/io.github.y-kanekoo.local-ci.plist` の生成だけを行い、PATH を明示します。表示された `launchctl bootstrap gui/$(id -u) <plist>` をユーザーが手で実行して有効化してください。2層運用では `watch --once`（900 秒間隔）の launchd が重い層の標準ランナーであり、有効化まで含めて標準セットアップとする（[docs/ci-two-tier.md](docs/ci-two-tier.md)）。停止は表示された `launchctl bootout ...` です。`uninstall` は bootout 手順を表示してから plist を削除します。`cron print` は crontab 行を表示するだけです。
 
 ## 秘密情報と制限
 
