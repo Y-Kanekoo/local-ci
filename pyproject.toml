@@ -14,7 +14,11 @@ dependencies = ["PyYAML>=6,<7"]
 local-ci = "local_ci.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.9"]
+dev = [
+    "hypothesis>=6.170.15",
+    "pytest>=8,<10",
+    "ruff>=0.9",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/local_ci"]
