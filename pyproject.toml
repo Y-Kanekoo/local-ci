@@ -17,7 +17,7 @@ local-ci = "local_ci.cli:main"
 dev = [
     "hypothesis>=6.170.15",
     "pytest>=8,<10",
-    "ruff>=0.9",
+    "ruff>=0.17.5",
 ]
 
 [tool.hatch.build.targets.wheel]
